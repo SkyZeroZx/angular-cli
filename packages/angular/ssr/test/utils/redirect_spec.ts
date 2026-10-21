@@ -67,29 +67,6 @@ describe('Redirect Utils', () => {
         /Invalid redirect status code: 200/,
       );
     });
-
-    it('should throw for a location which uses an unsupported protocol', () => {
-      // A `Location` can also be produced at render time, for example by a guard which returns a
-      // `RedirectCommand`, so it cannot rely on the validation performed during route extraction.
-      expect(() => createRedirectResponse('javascript:alert(1)')).toThrowError(
-        /Cannot redirect to 'javascript:alert\(1\)': the 'javascript:' protocol is not supported/,
-      );
-    });
-
-    it('should throw for a location which an untrusted proxy prefix made protocol-relative', () => {
-      // 'X-Forwarded-Prefix' is a request header, so a location built from it is untrusted. The
-      // URL parser reads a leading '/\\' as an authority, which would redirect off-origin.
-      for (const location of ['/\\evil.example/home', '//evil.example/home']) {
-        expect(() => createRedirectResponse(location))
-          .withContext(location)
-          .toThrowError(/is not a valid same-origin path/);
-      }
-    });
-
-    it('should send the normalized location', () => {
-      const response = createRedirectResponse('/docs/../about');
-      expect(response.headers.get('Location')).toBe('/about');
-    });
   });
 
   describe('normalizeAndValidateRoutePath', () => {

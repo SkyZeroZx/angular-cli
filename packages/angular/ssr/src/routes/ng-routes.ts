@@ -677,40 +677,6 @@ function invalidRedirectError(routePath: string, reason: string): string {
 }
 
 /**
- * Validates and normalizes the `Location` header of a server route configuration.
- *
- * A configured `Location` header turns the route into a redirect, both at runtime and in the static
- * redirect page generated when prerendering, so its value is validated as a redirect target. HTTP
- * header names are case-insensitive, so every entry which names the `Location` header is checked.
- *
- * @param headers - The headers configured for the route.
- * @returns The headers with each `Location` value normalized, or the reason one was rejected.
- */
-function normalizeLocationHeaders(
-  headers: Record<string, string>,
-): { headers: Record<string, string>; error?: undefined } | { headers?: undefined; error: string } {
-  let normalized: Record<string, string> | undefined;
-
-  for (const [name, value] of Object.entries(headers)) {
-    if (name.toLowerCase() !== 'location') {
-      continue;
-    }
-
-    const { url, error } = normalizeAndValidateRedirect(value);
-    if (error !== undefined) {
-      return { error };
-    }
-
-    // Store the normalized value so that the header sent at runtime and the generated static
-    // redirect page are the value which was validated.
-    normalized ??= { ...headers };
-    normalized[name] = url;
-  }
-
-  return { headers: normalized ?? headers };
-}
-
-/**
  * Replaces the route parameters, such as `:id`, in the path of `redirectTo`.
  *
  * Like in the Angular router, only whole path segments starting with `:` are parameters, and only
@@ -790,18 +756,6 @@ function buildServerConfigRouteTree({ routes, appShellRoute }: ServerRoutesConfi
         `Invalid '${path}' route configuration: 'getPrerenderParams' cannot be used with a '*' route.`,
       );
       continue;
-    }
-
-    if (metadata.headers) {
-      const { headers, error } = normalizeLocationHeaders(metadata.headers);
-      if (error !== undefined) {
-        errors.push(
-          `Invalid '${path}' route configuration: the 'headers.Location' value is invalid: ${error}`,
-        );
-        continue;
-      }
-
-      metadata.headers = headers;
     }
 
     serverConfigRouteTree.insert(path, metadata);

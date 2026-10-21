@@ -238,18 +238,11 @@ export function normalizeAndValidateRedirect(target: string): NormalizedUrl {
 /**
  * Creates an HTTP redirect response with a specified location and status code.
  *
- * This is the only place where a `Location` header is set, so the target is normalized and
- * validated here rather than only where it is configured. A location is not always a configured
- * value which route extraction has already checked: it can be produced by a guard at render time,
- * and it can be composed from the untrusted `X-Forwarded-Prefix` request header. The normalized
- * value is the one sent, so that the emitted header and the value which was checked are the same.
- *
  * @param location - The URL to which the response should redirect.
  * @param status - The HTTP status code for the redirection. Defaults to 302 (Found).
  *                 See: https://developer.mozilla.org/en-US/docs/Web/API/Response/redirect_static#status
  * @param headers - Additional headers to include in the response.
  * @returns A `Response` object representing the HTTP redirect.
- * @throws If `location` is not a supported redirect target.
  */
 export function createRedirectResponse(
   location: string,
@@ -263,16 +256,11 @@ export function createRedirectResponse(
     );
   }
 
-  const { url: normalizedLocation, error } = normalizeAndValidateRedirect(location);
-  if (error !== undefined) {
-    throw new Error(`Cannot redirect to '${location}': ${error}`);
-  }
-
   const resHeaders = headers instanceof Headers ? headers : new Headers(headers);
   if (ngDevMode && resHeaders.has('location')) {
     // eslint-disable-next-line no-console
     console.warn(
-      `Location header "${resHeaders.get('location')}" will be ignored and set to "${normalizedLocation}".`,
+      `Location header "${resHeaders.get('location')}" will be ignored and set to "${location}".`,
     );
   }
 
@@ -288,7 +276,7 @@ export function createRedirectResponse(
   }
 
   resHeaders.set('Vary', [...varySet].join(', '));
-  resHeaders.set('Location', normalizedLocation);
+  resHeaders.set('Location', location);
 
   return new Response(null, {
     status,
