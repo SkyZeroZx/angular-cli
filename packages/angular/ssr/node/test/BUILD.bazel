@@ -5,9 +5,15 @@ ts_project(
     name = "unit_test_lib",
     testonly = True,
     srcs = glob(["**/*_spec.ts"]),
+    tsconfig = "//:test-tsconfig-esm",
     deps = [
+        "//:node_modules/@angular/common",
+        "//:node_modules/@angular/compiler",
+        "//:node_modules/@angular/core",
+        "//:node_modules/@angular/platform-browser",
         "//:node_modules/@types/node",
         "//packages/angular/ssr",
+        "//packages/angular/ssr:node_modules/rxjs",
         "//packages/angular/ssr/node",
     ],
 )

@@ -12,6 +12,7 @@ import { renderApplication, renderModule, ɵSERVER_CONTEXT } from '@angular/plat
 import * as fs from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { URL } from 'node:url';
+import { SSR_REQUEST_LISTENER } from '../../../src/utils/ssr-request';
 import { validateUrl } from '../../../src/utils/validation';
 import { getAllowedHostsFromEnv } from '../environment-options';
 import { attachNodeGlobalErrorHandlers } from '../errors';
@@ -23,6 +24,13 @@ import {
 } from './peformance-profiler';
 
 const SSG_MARKER_REGEXP = /ng-server-context=["']\w*\|?ssg\|?\w*["']/;
+
+/**
+ * The time in milliseconds for which a request that ended without a response, such as a request
+ * that a page cancelled, stays recorded. It may already have been sent and reach the server later,
+ * for example when the server is busy.
+ */
+const CANCELLED_REQUEST_GRACE_PERIOD = 5_000;
 
 /**
  * @deprecated Use `AngularNodeAppEngine` or `AngularAppEngine` instead.
@@ -81,6 +89,12 @@ export class CommonEngine {
   private readonly pageIsSSG = new Map<string, boolean>();
   private readonly allowedHosts: ReadonlySet<string>;
 
+  /**
+   * The URLs that the pages being rendered are requesting from their own host, with the number of
+   * these requests in flight and, among them, the number that have not rejected a render yet.
+   */
+  readonly #requestedUrls = new Map<string, { inFlight: number; pending: number }>();
+
   constructor(private options?: CommonEngineOptions) {
     this.allowedHosts = new Set(getAllowedHostsFromEnv() ?? this.options?.allowedHosts ?? []);
 
@@ -118,6 +132,16 @@ export class CommonEngine {
     let html = await runMethod('Retrieve SSG Page', () => this.retrieveSSGPage(opts));
 
     if (html === undefined) {
+      if (url && this.#consumeRequestedUrl(url)) {
+        // A page that is being rendered is requesting this URL from its own host. Rendering it
+        // could render a page that requests it again, without bound. Error handlers, such as the
+        // default one of Express, answer the request with the `status` and `headers` of this error.
+        throw Object.assign(
+          new Error(`'${url}' was requested while rendering and is not rendered.`),
+          { status: 400, headers: { 'Cache-Control': 'no-store' } },
+        );
+      }
+
       html = await runMethod('Render Page', () => this.renderApplication(opts));
 
       if (opts.inlineCriticalCss !== false) {
@@ -192,6 +216,7 @@ export class CommonEngine {
 
     const extraProviders: StaticProvider[] = [
       { provide: ɵSERVER_CONTEXT, useValue: 'ssr' },
+      { provide: SSR_REQUEST_LISTENER, useValue: (url: URL) => this.#recordRequestedUrl(url) },
       ...(opts.providers ?? []),
       ...(this.options?.providers ?? []),
     ];
@@ -216,6 +241,60 @@ export class CommonEngine {
       : renderModule(moduleOrFactory, { extraProviders, ...commonRenderingOptions });
   }
 
+  /**
+   * Records a URL that a page being rendered is requesting from its own host.
+   *
+   * @param url - The URL of the request.
+   * @returns A function to call once the page no longer waits for the request, with `true` if a
+   * response was received, and `false` otherwise.
+   */
+  #recordRequestedUrl(url: URL): (settled: boolean) => void {
+    const key = getRequestedUrlKey(url);
+    const record = this.#requestedUrls.get(key) ?? { inFlight: 0, pending: 0 };
+    record.inFlight++;
+    record.pending++;
+    this.#requestedUrls.set(key, record);
+
+    const release = () => {
+      record.inFlight--;
+      // A request that is no longer in flight cannot reject a render anymore.
+      record.pending = Math.min(record.pending, record.inFlight);
+      if (record.inFlight === 0) {
+        this.#requestedUrls.delete(key);
+      }
+    };
+
+    return (settled) => {
+      if (settled) {
+        release();
+      } else {
+        setTimeout(release, CANCELLED_REQUEST_GRACE_PERIOD).unref?.();
+      }
+    };
+  }
+
+  /**
+   * Consumes a request for the given URL that a page being rendered is sending to its own host, if
+   * there is one. Each of these requests rejects at most one render of its URL, rather than every
+   * render of the URL while it is in flight.
+   *
+   * @param url - The URL to render.
+   * @returns `true` if a request was consumed and the render must be rejected, `false` otherwise.
+   */
+  #consumeRequestedUrl(url: string): boolean {
+    const record =
+      this.#requestedUrls.size > 0 && URL.canParse(url)
+        ? this.#requestedUrls.get(getRequestedUrlKey(new URL(url)))
+        : undefined;
+    if (!record?.pending) {
+      return false;
+    }
+
+    record.pending--;
+
+    return true;
+  }
+
   /** Retrieve the document from the cache or the filesystem */
   private async getDocument(filePath: string): Promise<string> {
     let doc = this.templateCache.get(filePath);
@@ -237,6 +316,36 @@ async function exists(path: fs.PathLike): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Returns the key of a URL that a page requests from its own host. It decodes percent-encoded
+ * octets one by one, so that malformed escapes do not throw, and drops the characters that `xhr2`
+ * escapes or trims, so that the requested URL and the URL that the server rebuilds from the request
+ * have the same key.
+ *
+ * @param url - The URL of a request or of a render.
+ * @returns The host name followed by the normalized path and query.
+ */
+function getRequestedUrlKey({ hostname, pathname, search }: URL): string {
+  const pathAndQuery = (pathname + search)
+    .replace(/%([\da-f]{2})/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/[\t\n\r]/g, '');
+
+  // Drop the trailing no-break spaces and byte order marks, as UTF-8 octets, which `xhr2` trims.
+  // A loop is used because a regular expression anchored at the end is quadratic on long runs.
+  let end = pathAndQuery.length;
+  while (end > 0) {
+    if (pathAndQuery.endsWith('\xC2\xA0', end)) {
+      end -= 2;
+    } else if (pathAndQuery.endsWith('\xEF\xBB\xBF', end)) {
+      end -= 3;
+    } else {
+      break;
+    }
+  }
+
+  return hostname + pathAndQuery.slice(0, end);
 }
 
 function isBootstrapFn(

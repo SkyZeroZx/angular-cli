@@ -26,6 +26,7 @@ ts_project(
     tsconfig = "//:build-tsconfig-esm",
     deps = [
         ":node_modules/beasties",
+        ":node_modules/rxjs",
         "//:node_modules/@angular/common",
         "//:node_modules/@angular/core",
         "//:node_modules/@angular/platform-browser",
